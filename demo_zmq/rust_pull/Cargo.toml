@@ -1,0 +1,13 @@
+[package]
+name = "rust_pull_demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+zeromq = "0.4"
+futures = "0.3"
+prost = "0.12" # Added for Protobuf
+
+[build-dependencies]
+prost-build = "0.12" # Added for build script

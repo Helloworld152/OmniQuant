@@ -1,0 +1,50 @@
+# === Project Specific ===
+.env
+config.json
+config.ini
+*.log
+flow_log/
+generated/
+
+# === C++ / CMake ===
+build/
+bin/
+CMakeLists.txt.user
+*.a
+*.o
+*.obj
+compile_commands.json
+.cmake/
+.cache/
+
+# === Rust ===
+target/
+**/*.rs.bk
+Cargo.lock
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+.env
+.pytest_cache/
+
+# === Node / Vue ===
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.vscode/
+
+# === IDE / OS ===
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

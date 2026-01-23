@@ -1,0 +1,19 @@
+[package]
+name = "omni_core_router"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+prost = "0.12"
+lapin = "2.3" # RabbitMQ
+# zeromq = "0.3" # Replaced with git dependency below
+zeromq = { git = "https://github.com/zeromq/zmq.rs.git", branch = "master" }
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.10"
+
+[build-dependencies]
+prost-build = "0.12"

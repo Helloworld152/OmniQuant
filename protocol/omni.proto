@@ -1,0 +1,64 @@
+syntax = "proto3";
+package omni;
+
+// 统一事件包
+message EventFrame {
+    int64 timestamp_ns = 1;
+    string source_id = 2; // e.g., "ctp_simnow_01"
+    oneof payload {
+        MarketData tick = 3;
+        OrderUpdate order = 4;
+        TradeUpdate trade = 5;
+        AccountUpdate account = 6;
+        PositionUpdate position = 8;
+        StatusEvent status = 7;
+    }
+}
+
+message MarketData {
+    string symbol = 1;
+    string exchange = 2;
+    double last_price = 3;
+    int32 volume = 4;
+    double open_interest = 5;
+}
+
+message PositionUpdate {
+    string symbol = 1;
+    string direction = 2; // Long/Short
+    int32 volume = 3;
+    double open_price = 4;
+    double last_price = 5;
+    double pnl = 6;
+}
+
+message OrderUpdate {
+    string order_id = 1;
+    string symbol = 2;
+    string direction = 3; // BUY/SELL
+    string offset = 4; // OPEN/CLOSE
+    double price = 5;
+    int32 volume = 6;
+    string status = 7; // Submitted, AllTraded, Canceled
+}
+
+message TradeUpdate {
+    string trade_id = 1;
+    string symbol = 2;
+    string direction = 3;
+    string offset = 4;
+    double price = 5;
+    int32 volume = 6;
+}
+
+message AccountUpdate {
+    string account_id = 1;
+    double balance = 2;
+    double frozen = 3;
+    double available = 4;
+}
+
+message StatusEvent {
+    string msg = 1;
+    bool connected = 2;
+}
