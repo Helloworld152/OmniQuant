@@ -14,7 +14,7 @@
 graph TD
     %% 配置与主程序
     Config[config.json]
-    Main[Main Program<br/>Plugin Loader]
+    Engine[HftEngine<br/>Plugin Loader]
 
     %% 动态库插件
     subgraph Plugins [Dynamic Libraries]
@@ -26,9 +26,9 @@ graph TD
     EventBus{EventBus<br/>同步分发器}
 
     %% 数据流
-    Config --> Main
-    Main -->|dlopen| CTP
-    Main -->|dlopen| Strategy
+    Config --> Engine
+    Engine -->|dlopen| CTP
+    Engine -->|dlopen| Strategy
     
     CTP -->|publish<br/>EVENT_MARKET_DATA| EventBus
     EventBus -->|subscribe| Strategy
@@ -41,8 +41,15 @@ graph TD
 
 ### A. Infrastructure (基础设施层)
 
+#### HftEngine (核心引擎)
+- **实现**: `src/engine.cpp` / `include/engine.h`
+- **职责**: 
+  - 负责系统初始化与配置加载 (`loadConfig`)
+  - 管理插件生命周期（加载、启动、停止、卸载）
+  - 持有并管理全局 `EventBus` 实例
+
 #### EventBus (事件总线)
-- **实现**: `EventBusImpl` 类，基于 `std::array<std::vector<Handler>, MAX_EVENTS>` 的同步分发器
+- **实现**: `EventBusImpl` 类（位于 `src/engine.cpp` 内部），基于 `std::array<std::vector<Handler>, MAX_EVENTS>` 的同步分发器
 - **接口**: 
   - `subscribe(EventType type, Handler handler)`: 订阅事件
   - `publish(EventType type, void* data)`: 发布事件（同步调用所有订阅者）
@@ -84,7 +91,7 @@ class IModule {
 ```
 
 #### 插件加载流程
-1. 主程序读取 `config.json`（使用 RapidJSON 解析）
+1. `HftEngine` 读取 `config.json`（使用 RapidJSON 解析）
 2. 遍历 `plugins` 数组，对每个启用的插件：
    - 使用 `dlopen()` 加载 `.so` 库
    - 使用 `dlsym()` 获取 `create_module` 函数指针
@@ -196,9 +203,11 @@ void onTick(MarketData* md) {
 ```
 hft_eb/
 ├── include/
-│   └── framework.h          # 框架接口定义
+│   ├── framework.h          # 框架接口定义
+│   └── engine.h             # 引擎核心类定义
 ├── src/
-│   └── main.cpp             # 主程序（插件加载器）
+│   ├── main.cpp             # 程序入口
+│   └── engine.cpp           # 引擎实现（EventBus, PluginLoader）
 ├── modules/
 │   ├── ctp/
 │   │   └── ctp_module.cpp   # CTP 模块实现
@@ -206,5 +215,5 @@ hft_eb/
 │       └── simple_strategy.cpp  # 策略模块实现
 ├── config.json              # 插件配置文件
 ├── CMakeLists.txt           # 构建配置
-└── ARCHITECTURE.md          # 本文档
+└── GEMINI.md                # 本文档
 ```

@@ -14,8 +14,12 @@ target_link_libraries(mod_ctp PRIVATE -Wl,--no-as-needed pthread -Wl,--as-needed
 add_library(mod_strategy SHARED modules/strategy/simple_strategy.cpp)
 target_include_directories(mod_strategy PRIVATE include)
 
-# 3. 编译主程序
-add_executable(hft_engine src/main.cpp)
+# 3. 编译插件 C: SimpleTrade
+add_library(mod_trade SHARED modules/trade/simple_trade.cpp)
+target_include_directories(mod_trade PRIVATE include)
+
+# 4. 编译主程序
+add_executable(hft_engine src/main.cpp src/engine.cpp)
 target_include_directories(hft_engine PRIVATE include)
 # 引入项目现有的 rapidjson
 target_include_directories(hft_engine PRIVATE "${CMAKE_SOURCE_DIR}/../gateway_ctp/include") 
