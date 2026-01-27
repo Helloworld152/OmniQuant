@@ -24,10 +24,9 @@ fi
 # --------------------
 
 echo "=== 1. 编译 C++ 网关 (CTP) ==="
-# ... (后续编译逻辑不变)
 mkdir -p "$ROOT_DIR/gateway_ctp/build"
 cd "$ROOT_DIR/gateway_ctp/build"
-cmake ..
+cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j$(nproc)
 
 echo ""

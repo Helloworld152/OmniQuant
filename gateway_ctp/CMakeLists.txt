@@ -3,6 +3,7 @@ project(omni_gateway_ctp)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_CXX_FLAGS_RELEASE "-O3") # 强制开启最高优化
 
 # 1. 查找依赖
 find_package(PkgConfig REQUIRED)
@@ -16,7 +17,7 @@ find_package(Protobuf REQUIRED)
 # 3. 包含目录
 include_directories(${ZMQ_INCLUDE_DIRS})
 include_directories(${Protobuf_INCLUDE_DIRS})
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # === CTP SDK 配置 ===
 set(CTP_SDK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ctp_sdk)
@@ -28,6 +29,11 @@ link_directories(${CTP_SDK_DIR}/lib)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(PROTO_SRC ${CMAKE_CURRENT_BINARY_DIR}/generated/omni.pb.cc)
 set(PROTO_HDR ${CMAKE_CURRENT_BINARY_DIR}/generated/omni.pb.h)
+
+if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
+    # 开启本机架构优化 (AVX/AVX2/AVX512)
+    add_compile_options(-march=native)
+endif()
 
 add_custom_command(
     OUTPUT ${PROTO_SRC} ${PROTO_HDR}

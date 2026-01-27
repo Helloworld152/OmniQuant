@@ -83,6 +83,67 @@ void TraderHandler::OnRspUserLogin(CThostFtdcRspUserLoginField *pRspUserLogin, C
     }).detach();
 }
 
+// --- 交易操作实现 ---
+
+std::string TraderHandler::SendOrder(const omni::OrderRequest& req) {
+    if (!m_connected) return "";
+
+    CThostFtdcInputOrderField order = {0};
+    
+    strcpy(order.BrokerID, m_brokerId.c_str());
+    strcpy(order.InvestorID, m_userId.c_str());
+    strcpy(order.InstrumentID, req.symbol().c_str());
+    
+    // ID 生成: 简单递增，实际应更复杂
+    m_reqId++;
+    snprintf(order.OrderRef, sizeof(order.OrderRef), "%d", m_reqId);
+
+    // 价格与数量
+    order.LimitPrice = req.price();
+    order.VolumeTotalOriginal = req.volume();
+    
+    // 报单参数
+    order.OrderPriceType = THOST_FTDC_OPT_LimitPrice;
+    order.Direction = (req.direction() == "Buy") ? THOST_FTDC_D_Buy : THOST_FTDC_D_Sell;
+    
+    // 开平标志
+    if (req.offset() == "Open") order.CombOffsetFlag[0] = THOST_FTDC_OF_Open;
+    else if (req.offset() == "Close") order.CombOffsetFlag[0] = THOST_FTDC_OF_Close;
+    else if (req.offset() == "CloseToday") order.CombOffsetFlag[0] = THOST_FTDC_OF_CloseToday;
+    else order.CombOffsetFlag[0] = THOST_FTDC_OF_Close; // Default
+
+    order.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation;
+    
+    order.TimeCondition = THOST_FTDC_TC_GFD; // 当日有效
+    order.VolumeCondition = THOST_FTDC_VC_AV; // 任意数量
+    order.MinVolume = 1;
+    order.ContingentCondition = THOST_FTDC_CC_Immediately;
+    order.ForceCloseReason = THOST_FTDC_FCC_NotForceClose;
+    order.IsAutoSuspend = 0;
+
+    int ret = m_api->ReqOrderInsert(&order, m_reqId);
+    if (ret != 0) {
+        std::cerr << "[TRADER_CTP] 报单请求发送失败: " << ret << std::endl;
+        return "";
+    }
+    
+    // 返回本地生成的 ID (SessionID + OrderRef 组合，但在 Init 前不知道 SessionID，这里简化返回 OrderRef)
+    // 实际应返回唯一标识
+    return std::string(order.OrderRef);
+}
+
+void TraderHandler::CancelOrder(const std::string& order_id) {
+    if (!m_connected) return;
+
+    // 假设 order_id 是 OrderSysID (交易所ID) 或 OrderRef
+    // CTP 撤单需要: InstrumentID + (OrderSysID OR OrderRef+FrontID+SessionID)
+    // 这里简化处理：通常需要维护一个 order_id -> (Instrument, Front, Session, Ref) 的映射
+    // 目前简单实现，假设 order_id 包含了必要信息或无法撤单
+    
+    // TODO: 实现更复杂的撤单逻辑，需要本地维护 Order 状态映射
+    std::cerr << "[TRADER_CTP] 撤单功能尚未完全实现 (需维护订单映射)" << std::endl;
+}
+
 // --- 回报处理 ---
 
 void TraderHandler::OnRtnOrder(CThostFtdcOrderField *pOrder) {
@@ -118,7 +179,7 @@ void TraderHandler::OnRtnOrder(CThostFtdcOrderField *pOrder) {
               << pOrder->InstrumentID << " " << pOrder->OrderStatus 
               << " (" << pOrder->StatusMsg << ")" << std::endl;
               
-    SendEvent(frame);
+    m_callback(frame);
 }
 
 void TraderHandler::OnRtnTrade(CThostFtdcTradeField *pTrade) {
@@ -137,7 +198,7 @@ void TraderHandler::OnRtnTrade(CThostFtdcTradeField *pTrade) {
     trade->set_volume(pTrade->Volume);
 
     std::cout << "[TRADER_CTP] 收到成交回报: " << pTrade->InstrumentID << " @ " << pTrade->Price << std::endl;
-    SendEvent(frame);
+    m_callback(frame);
 }
 
 void TraderHandler::OnRspOrderInsert(CThostFtdcInputOrderField *pInputOrder, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) {
@@ -149,6 +210,18 @@ void TraderHandler::OnRspOrderInsert(CThostFtdcInputOrderField *pInputOrder, CTh
 void TraderHandler::OnErrRtnOrderInsert(CThostFtdcInputOrderField *pInputOrder, CThostFtdcRspInfoField *pRspInfo) {
     if (pRspInfo && pRspInfo->ErrorID != 0) {
         std::cerr << "[TRADER_CTP] 报单错误: " << pRspInfo->ErrorMsg << std::endl;
+    }
+}
+
+void TraderHandler::OnRspOrderAction(CThostFtdcInputOrderActionField *pInputOrderAction, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) {
+     if (pRspInfo && pRspInfo->ErrorID != 0) {
+        std::cerr << "[TRADER_CTP] 撤单失败: " << pRspInfo->ErrorMsg << std::endl;
+    }
+}
+
+void TraderHandler::OnErrRtnOrderAction(CThostFtdcOrderActionField *pOrderAction, CThostFtdcRspInfoField *pRspInfo) {
+    if (pRspInfo && pRspInfo->ErrorID != 0) {
+        std::cerr << "[TRADER_CTP] 撤单错误: " << pRspInfo->ErrorMsg << std::endl;
     }
 }
 
@@ -186,7 +259,7 @@ void TraderHandler::OnRspQryTradingAccount(CThostFtdcTradingAccountField *pTradi
     acc->set_frozen(pTradingAccount->FrozenMargin + pTradingAccount->FrozenCash);
 
     std::cout << "[TRADER_CTP] 资金更新: Balance=" << pTradingAccount->Balance << std::endl;
-    SendEvent(frame);
+    m_callback(frame);
 }
 
 void TraderHandler::OnRspQryInvestorPosition(CThostFtdcInvestorPositionField *pInvestorPosition, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) {
@@ -207,16 +280,5 @@ void TraderHandler::OnRspQryInvestorPosition(CThostFtdcInvestorPositionField *pI
     pos->set_pnl(pInvestorPosition->PositionProfit);
 
     std::cout << "[TRADER_CTP] 持仓更新: " << pInvestorPosition->InstrumentID << " Vol=" << pInvestorPosition->Position << std::endl;
-    SendEvent(frame);
-}
-
-void TraderHandler::SendEvent(const omni::EventFrame& event) {
-    std::string payload;
-    if (event.SerializeToString(&payload)) {
-        zmq::message_t msg(payload.size());
-        memcpy(msg.data(), payload.data(), payload.size());
-        try {
-            m_socket->send(msg, zmq::send_flags::dontwait);
-        } catch (...) {}
-    }
+    m_callback(frame);
 }

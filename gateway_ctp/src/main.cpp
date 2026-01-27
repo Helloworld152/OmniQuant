@@ -1,85 +1,121 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <chrono>
+#include <atomic>
 #include <zmq.hpp>
-#include "MdHandler.h"
-#include "TraderHandler.h" // 新增
+#include "CtpGateway.h"
+#include "omni.pb.h"
+#include "rapidjson/document.h"
+#include "rapidjson/writer.h"
+#include "rapidjson/stringbuffer.h"
 
-// 默认 CTP 行情前置地址
+// 默认配置
 const char* DEFAULT_MD_FRONT = "tcp://182.254.243.31:40011"; 
-const char* DEFAULT_TD_FRONT = "tcp://182.254.243.31:40001"; // 假设的交易前置
+const char* DEFAULT_TD_FRONT = "tcp://182.254.243.31:40001";
+
+// 使用 rapidjson 构建 JSON 配置字符串
+std::string build_config_json() {
+    rapidjson::Document d;
+    d.SetObject();
+    auto& allocator = d.GetAllocator();
+
+    auto get_env = [](const char* name, const char* def) -> std::string {
+        const char* val = std::getenv(name);
+        return val ? std::string(val) : std::string(def);
+    };
+
+    d.AddMember("md_front", rapidjson::Value(get_env("CTP_MD_FRONT", DEFAULT_MD_FRONT).c_str(), allocator).Move(), allocator);
+    d.AddMember("td_front", rapidjson::Value(get_env("CTP_TD_FRONT", DEFAULT_TD_FRONT).c_str(), allocator).Move(), allocator);
+    d.AddMember("broker_id", rapidjson::Value(get_env("CTP_BROKER", "").c_str(), allocator).Move(), allocator);
+    d.AddMember("user_id", rapidjson::Value(get_env("CTP_USER", "").c_str(), allocator).Move(), allocator);
+    d.AddMember("password", rapidjson::Value(get_env("CTP_PASS", "").c_str(), allocator).Move(), allocator);
+    d.AddMember("app_id", rapidjson::Value(get_env("CTP_APPID", "").c_str(), allocator).Move(), allocator);
+    d.AddMember("auth_code", rapidjson::Value(get_env("CTP_AUTHCODE", "").c_str(), allocator).Move(), allocator);
+    
+    // 解析订阅列表
+    rapidjson::Value symbols(rapidjson::kArrayType);
+    std::string subs = get_env("CTP_SUB_LIST", "rb2605,au2606,ag2606");
+    size_t pos = 0;
+    while ((pos = subs.find(',')) != std::string::npos) {
+        symbols.PushBack(rapidjson::Value(subs.substr(0, pos).c_str(), allocator).Move(), allocator);
+        subs.erase(0, pos + 1);
+    }
+    if (!subs.empty()) {
+        symbols.PushBack(rapidjson::Value(subs.c_str(), allocator).Move(), allocator);
+    }
+    d.AddMember("symbols", symbols, allocator);
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    d.Accept(writer);
+    
+    return buffer.GetString();
+}
+
+std::atomic<bool> g_running(true);
 
 int main() {
-    std::cout << "[GATEWAY_CTP] 正在启动 OmniQuant CTP 网关 (全功能)..." << std::endl;
+    std::cout << "[GATEWAY_MAIN] Starting OmniQuant CTP Gateway..." << std::endl;
 
-    // 1. 设置 ZMQ PUSH 套接字 (共享)
+    // 1. ZMQ Setup
     zmq::context_t context(1);
+    
+    // PUSH: 发送行情和交易回报
     zmq::socket_t pusher(context, zmq::socket_type::push);
-    try {
-        pusher.connect("tcp://localhost:5555"); 
-        std::cout << "[GATEWAY_CTP] ZMQ 已连接至 tcp://localhost:5555" << std::endl;
-    } catch (const zmq::error_t& e) {
-        std::cerr << "[GATEWAY_CTP] ZMQ 连接失败: " << e.what() << std::endl;
-        return 1;
-    }
-
-    // 2. 初始化 CTP API
-    system("mkdir -p flow_log");
+    pusher.connect("tcp://localhost:5555");
     
-    // --- 行情 ---
-    CThostFtdcMdApi* pMdApi = CThostFtdcMdApi::CreateFtdcMdApi("flow_log/md_");
-    MdHandler mdHandler(pMdApi, &pusher);
+    // PULL: 接收交易指令
+    zmq::socket_t puller(context, zmq::socket_type::pull);
+    puller.bind("tcp://*:6001"); // 监听端口接收指令
 
-    // --- 交易 ---
-    CThostFtdcTraderApi* pTdApi = CThostFtdcTraderApi::CreateFtdcTraderApi("flow_log/td_");
-    TraderHandler tdHandler(pTdApi, &pusher);
-
-    // 3. 配置并启动
-    // 行情部分
-    const char* env_md_front = std::getenv("CTP_MD_FRONT");
-    std::string md_front = env_md_front ? env_md_front : DEFAULT_MD_FRONT;
-
-    const char* env_inst = std::getenv("CTP_SUB_LIST"); 
-    std::vector<std::string> subs;
-    if (env_inst) {
-        std::string s = env_inst;
-        std::string delimiter = ",";
-        size_t pos = 0;
-        std::string token;
-        while ((pos = s.find(delimiter)) != std::string::npos) {
-            token = s.substr(0, pos);
-            subs.push_back(token);
-            s.erase(0, pos + delimiter.length());
+    // 2. Gateway Setup
+    omni::CtpGateway gateway;
+    
+    // 回调函数：Gateway 产生的任何数据都推送到 ZMQ
+    auto event_callback = [&](const omni::EventFrame& frame) {
+        std::string payload;
+        if (frame.SerializeToString(&payload)) {
+            zmq::message_t msg(payload.size());
+            memcpy(msg.data(), payload.data(), payload.size());
+            try {
+                pusher.send(msg, zmq::send_flags::dontwait);
+            } catch (...) {}
         }
-        subs.push_back(s);
-    } else {
-        subs = {"rb2605", "au2606", "ag2606"}; 
+    };
+
+    std::string config = build_config_json();
+    std::cout << "[GATEWAY_MAIN] Config: " << config << std::endl;
+
+    gateway.init(config, event_callback);
+    gateway.connect();
+
+    std::cout << "[GATEWAY_MAIN] Gateway started. Listening for commands on tcp://*:6001" << std::endl;
+
+    // 3. Command Loop
+    zmq::pollitem_t items[] = {
+        { static_cast<void*>(puller), 0, ZMQ_POLLIN, 0 }
+    };
+
+    while (g_running) {
+        // Poll with 100ms timeout
+        zmq::poll(items, 1, std::chrono::milliseconds(100));
+
+        if (items[0].revents & ZMQ_POLLIN) {
+            zmq::message_t msg;
+            if (puller.recv(msg, zmq::recv_flags::none)) {
+                // 解析指令
+                omni::OrderRequest req;
+                if (req.ParseFromArray(msg.data(), msg.size())) {
+                    std::cout << "[GATEWAY_MAIN] Received Order: " << req.symbol() << " " << req.direction() << std::endl;
+                    gateway.send_order(req);
+                } else {
+                    std::cerr << "[GATEWAY_MAIN] Received unknown command (parse failed)" << std::endl;
+                }
+            }
+        }
     }
 
-    mdHandler.Subscribe(subs);
-    mdHandler.Connect(md_front);
-
-    // 交易部分 (从环境读取账户)
-    const char* env_td_front = std::getenv("CTP_TD_FRONT");
-    std::string td_front = env_td_front ? env_td_front : DEFAULT_TD_FRONT;
-    
-    const char* broker = std::getenv("CTP_BROKER");
-    const char* user = std::getenv("CTP_USER");
-    const char* pass = std::getenv("CTP_PASS");
-    const char* appid = std::getenv("CTP_APPID");
-    const char* auth = std::getenv("CTP_AUTHCODE");
-
-    if (broker && user && pass && appid && auth) {
-        std::cout << "[GATEWAY_CTP] 启动交易接口..." << std::endl;
-        tdHandler.Connect(td_front, broker, user, pass, appid, auth);
-    } else {
-        std::cout << "[GATEWAY_CTP] 警告: 缺少交易账户配置 (CTP_USER/PASS...)，仅启动行情。" << std::endl;
-    }
-
-    // 4. 阻塞主线程
-    std::cout << "[GATEWAY_CTP] 按 Ctrl+C 停止运行..." << std::endl;
-    pMdApi->Join();
-    // pTdApi->Join(); // 只需要 Join 一个即可阻塞
-
+    gateway.close();
     return 0;
 }

@@ -61,14 +61,17 @@ void MdHandler::OnRspSubMarketData(CThostFtdcSpecificInstrumentField *pSpecificI
 }
 
 void MdHandler::OnRtnDepthMarketData(CThostFtdcDepthMarketDataField *pData) {
+    auto t1 = std::chrono::high_resolution_clock::now(); // [PERF] Start
+
     if (!pData) return;
 
-    // 1. 构建 Protobuf 事件包
-    omni::EventFrame frame;
-    frame.set_timestamp_ns(now_ns());
-    frame.set_source_id("ctp_real_01");
+    // [Optimization] Object Reuse (No Malloc/Free)
+    m_event_buffer.Clear();
+    
+    m_event_buffer.set_timestamp_ns(now_ns());
+    m_event_buffer.set_source_id("ctp_real_01");
 
-    omni::MarketData* tick = frame.mutable_tick();
+    omni::MarketData* tick = m_event_buffer.mutable_tick();
     tick->set_symbol(pData->InstrumentID);
     tick->set_exchange(pData->ExchangeID);
     
@@ -83,18 +86,22 @@ void MdHandler::OnRtnDepthMarketData(CThostFtdcDepthMarketDataField *pData) {
     tick->set_open_interest(pData->OpenInterest);
 
     // 2. 序列化并发送至核心路由
-    SendEvent(frame);
-}
+    m_callback(m_event_buffer);
 
-void MdHandler::SendEvent(const omni::EventFrame& event) {
-    std::string payload;
-    if (event.SerializeToString(&payload)) {
-        zmq::message_t msg(payload.size());
-        memcpy(msg.data(), payload.data(), payload.size());
-        try {
-            m_socket->send(msg, zmq::send_flags::dontwait);
-        } catch (...) {
-            // 忽略发送错误，防止阻塞回调线程
-        }
+    // [PERF] End & Report
+    auto t2 = std::chrono::high_resolution_clock::now();
+    
+    static long count = 0;
+    static long total_us = 0;
+    
+    long us = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+    total_us += us;
+    count++;
+
+    if (count >= 50 ) {
+        std::cout << "[PERF] Last 50 ticks avg processing time: " 
+                  << (total_us / 50.0) << " us" << std::endl;
+        count = 0;
+        total_us = 0;
     }
 }

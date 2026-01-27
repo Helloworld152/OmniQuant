@@ -3,14 +3,14 @@
 #include <iostream>
 #include <vector>
 #include <cstring>
-#include <zmq.hpp>
 #include "ThostFtdcMdApi.h"
 #include "omni.pb.h"
+#include "IGateway.h"
 
 class MdHandler : public CThostFtdcMdSpi {
 public:
-    MdHandler(CThostFtdcMdApi* api, zmq::socket_t* socket) 
-        : m_api(api), m_socket(socket), m_reqId(0) {}
+    MdHandler(CThostFtdcMdApi* api, omni::EventCallback cb) 
+        : m_api(api), m_callback(cb), m_reqId(0) {}
 
     virtual ~MdHandler() {}
 
@@ -37,9 +37,10 @@ public:
 
 private:
     CThostFtdcMdApi* m_api;
-    zmq::socket_t* m_socket;
+    omni::EventCallback m_callback;
     int m_reqId;
     std::vector<std::string> m_instruments;
-
-    void SendEvent(const omni::EventFrame& event);
+    
+    // [Optimization] Memory Reuse
+    omni::EventFrame m_event_buffer;
 };

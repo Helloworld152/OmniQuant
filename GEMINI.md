@@ -18,7 +18,7 @@
 
 ---
 
-## 2. 当前进度 (Phase 1: Skeleton)
+## 2. 当前进度 (Phase 2: Core Logic)
 
 ### 已完成 ✅
 - [x] **统一协议定义**：在 `protocol/omni.proto` 中定义了 `EventFrame` 通用数据结构。
@@ -26,11 +26,13 @@
 - [x] **环境适配**：解决了 Ubuntu 系统库与 Anaconda 环境下 Protobuf 的版本冲突及 GLIBCXX 链接问题。
 - [x] **基础设施自动化**：提供 `docker-compose.yml` 一键启动 RabbitMQ/Redis/Postgres。
 - [x] **启动脚本**：`start_all.sh` 可一键编译并运行 C++ 和 Rust 核心链路。
+- [x] **CTP 真实接入**：已完善 `gateway_ctp`，实现了 `MdHandler` (行情) 和 `TraderHandler` (交易) 的完整逻辑。
+- [x] **后端消费逻辑**：`consumer.py` 已实现从 RabbitMQ 解析 Protobuf 并通过 WebSocket 广播 JSON 数据。
+- [x] **前端实现**：Web Dashboard 已完成，支持实时行情表格、持仓监控、委托/成交日志展示。
 
 ### 待进行 ⏳
-- [ ] **CTP 真实接入**：将 `gateway_mock` 替换为真实的 CTP API 逻辑。
-- [ ] **后端消费逻辑**：完善 Python 端的 `consumer.py`，实现 MQ 到 WebSocket 的转发。
-- [ ] **状态持久化**：在 Python 端实现 Redis 持仓累加逻辑。
+- [ ] **状态持久化**：在 Python 端实现 Redis 持仓累加逻辑 (目前仅为广播，重启后数据丢失)。
+- [ ] **历史数据存储**：将行情数据写入 TimescaleDB/Postgres。
 
 ---
 
@@ -53,23 +55,18 @@ docker-compose up -d
 
 ---
 
-## 4. 下一步开发路线 (Phase 2)
+## 4. 下一步开发路线 (Phase 2.5)
 
-### 1. CTP 接入
-1. 将 CTP SDK (`.so` 和 `.h`) 放入 `gateway_ctp/lib`。
-2. 修改 `gateway_ctp/src/main.cpp`，实现 `CThostFtdcMdSpi` 和 `CThostFtdcTraderSpi`。
-3. 在回调函数中封装 `omni::EventFrame` 并通过 ZMQ 发出。
+### 1. 状态持久化 (Redis)
+1. 在 `backend_api` 中引入 Redis 客户端。
+2. 在 `consumer.py` 收到 `TradeUpdate` 时，原子更新 Redis 中的持仓数据。
+3. 在 `manager.py` 中增加 HTTP API，允许前端在 WebSocket 连接建立前获取当前持仓快照。
 
-### 2. 后端增强
-1. 运行 `protocol/scripts/gen_protos.sh` 生成 Python 代码。
-2. 完善 `backend_api/app/consumer.py` 中的反序列化逻辑。
-3. 实现 WebSocket 广播，将行情推送到 `web_dashboard`。
-
-### 3. 前端实现
-1. 使用 `protobufjs` 在前端解析二进制流（或由 Python 转为 JSON 推送以降低复杂度）。
-2. 构建实时行情表，实现“红涨绿跌”效果。
+### 2. 系统稳定性测试
+1. 模拟 CTP 断线重连，验证 `gateway_ctp` 的健壮性。
+2. 验证前端 WebSocket 在后端重启后的重连机制。
 
 ---
 
-**Last Updated**: 2026-01-23
-**Status**: Phase 1 Complete / Functional Skeleton
+**Last Updated**: 2026-01-24
+**Status**: Phase 2 Complete / Optimization Pending
