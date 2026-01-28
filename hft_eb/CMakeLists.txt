@@ -28,7 +28,22 @@ target_include_directories(mod_strategy PRIVATE include)
 add_library(mod_trade SHARED modules/trade/simple_trade.cpp)
 target_include_directories(mod_trade PRIVATE include)
 
-# 4. 编译主程序
+# 4. 编译插件 D: Risk Control
+add_library(mod_risk SHARED modules/risk/risk_module.cpp)
+target_include_directories(mod_risk PRIVATE include)
+target_link_libraries(mod_risk PRIVATE -Wl,--no-as-needed pthread -Wl,--as-needed)
+
+# 5. 编译插件 E: Position Manager
+add_library(mod_position SHARED modules/position/position_module.cpp)
+target_include_directories(mod_position PRIVATE include)
+
+# 6. 编译插件 F: Monitor (ZMQ)
+add_library(mod_monitor SHARED modules/monitor/monitor_module.cpp)
+target_include_directories(mod_monitor PRIVATE include)
+# Link against system libzmq (assuming installed via apt/yum)
+target_link_libraries(mod_monitor PRIVATE -Wl,--no-as-needed pthread zmq -Wl,--as-needed)
+
+# 7. 编译主程序
 add_executable(hft_engine src/main.cpp src/engine.cpp)
 target_include_directories(hft_engine PRIVATE include)
 # 引入项目现有的 rapidjson

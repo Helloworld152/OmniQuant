@@ -14,7 +14,11 @@
 // 事件类型
 enum EventType {
     EVENT_MARKET_DATA = 0, // 行情
-    EVENT_ORDER_REQ,       // 报单请求
+    EVENT_ORDER_REQ,       // 报单请求 (策略意图)
+    EVENT_ORDER_SEND,      // 报单指令 (经风控批准)
+    EVENT_RTN_ORDER,       // 报单回报 (交易所状态)
+    EVENT_RTN_TRADE,       // 成交回报 (交易所成交)
+    EVENT_POS_UPDATE,      // 持仓更新
     EVENT_LOG,             // 日志
     MAX_EVENTS
 };
@@ -28,9 +32,51 @@ struct MarketData {
 
 struct OrderReq {
     char symbol[32];
-    char direction; // 'B'uy or 'S'ell
+    char direction;   // 'B'uy or 'S'ell
+    char offset_flag; // 'O'pen, 'C'lose, 'T'oday (上期所平今)
     double price;
     int volume;
+};
+
+// 报单回报
+struct OrderRtn {
+    char order_ref[13];
+    char symbol[32];
+    char direction;      // 'B'/'S'
+    char offset_flag;    // 'O'/'C'/'T'
+    double limit_price;
+    int volume_total;    // 报单总量
+    int volume_traded;   // 已成交量
+    char status;         // '0':全部成交, '1':部分成交, '3':未成交, '5':已撤单
+    char status_msg[81];
+};
+
+// 成交回报
+struct TradeRtn {
+    char symbol[32];
+    char direction;      // 'B'/'S'
+    char offset_flag;    // 'O'/'C'/'T'
+    double price;
+    int volume;
+    char trade_id[21];
+    char order_ref[13];
+};
+
+// 持仓明细
+struct PositionDetail {
+    char symbol[32];
+    
+    // 多头
+    int long_td;
+    int long_yd;
+    double long_avg_price;
+    
+    // 空头
+    int short_td;
+    int short_yd;
+    double short_avg_price;
+    
+    double net_pnl;
 };
 
 // ==========================================

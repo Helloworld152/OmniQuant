@@ -2,218 +2,122 @@
 
 ## 1. 核心设计哲学
 - **Zero Copy**: 事件在总线上传递时仅传递指针（`void*`），杜绝内存拷贝。
-- **Lock Free**: 在关键路径（Hot Path）上采用同步调用，避免互斥锁。
+- **Lock Free**: 在关键路径（Hot Path）上采用单线程同步调用，避免互斥锁竞争。
 - **Plugin Architecture**: 基于动态库（`.so`）的插件系统，支持运行时加载和配置。
-- **Hot Path Optimization**: 
-  - `Market Data` -> `Strategy` -> `Order Execution` 采用同步事件分发，确保低延迟。
-  - 非关键任务（如日志）可通过独立模块异步处理。
+- **Risk First**: 风控模块作为交易的强制前置过滤器。
 
-## 2. 系统拓扑
+## 2. 系统拓扑 (Updated)
 
 ```mermaid
 graph TD
-    %% 配置与主程序
-    Config[config.json]
+    %% 核心引擎
     Engine[HftEngine<br/>Plugin Loader]
-
-    %% 动态库插件
-    subgraph Plugins [Dynamic Libraries]
-        CTP[libmod_ctp.so<br/>CtpModule]
-        Strategy[libmod_strategy.so<br/>StrategyModule]
-    end
-
-    %% 核心总线
     EventBus{EventBus<br/>同步分发器}
 
-    %% 数据流
-    Config --> Engine
-    Engine -->|dlopen| CTP
-    Engine -->|dlopen| Strategy
+    %% 插件层
+    subgraph Modules [Plugins]
+        MD[libmod_ctp.so<br/>Market Sim]
+        Strategy[libmod_strategy.so<br/>Simple Strategy]
+        Risk[libmod_risk.so<br/>Risk Control]
+        PosMgr[libmod_position.so<br/>Position Mgr]
+        Trade[libmod_ctp_real.so<br/>CTP Real Trade]
+    end
+
+    %% 初始化
+    Config[config.json] --> Engine
+    Engine -->|dlopen| Modules
+
+    %% 数据流 (Hot Path)
+    MD -->|EVENT_MARKET_DATA| EventBus
+    EventBus -->|dispatch| Strategy
+    EventBus -->|dispatch| Risk
+
+    Strategy -->|EVENT_ORDER_REQ| EventBus
+    EventBus -->|dispatch| Risk
     
-    CTP -->|publish<br/>EVENT_MARKET_DATA| EventBus
-    EventBus -->|subscribe| Strategy
-    
-    Strategy -->|publish<br/>EVENT_ORDER_REQ| EventBus
-    EventBus -->|subscribe| CTP
+    Risk -->|EVENT_ORDER_SEND| EventBus
+    EventBus -->|dispatch| Trade
+
+    Trade -->|EVENT_RTN_TRADE| EventBus
+    EventBus -->|dispatch| PosMgr
+
+    PosMgr -->|EVENT_POS_UPDATE| EventBus
+    EventBus -->|dispatch| Strategy
 ```
 
 ## 3. 核心组件
 
 ### A. Infrastructure (基础设施层)
+- **HftEngine**: 管理插件生命周期。
+- **EventBus**: 同步事件分发器。
 
-#### HftEngine (核心引擎)
-- **实现**: `src/engine.cpp` / `include/engine.h`
-- **职责**: 
-  - 负责系统初始化与配置加载 (`loadConfig`)
-  - 管理插件生命周期（加载、启动、停止、卸载）
-  - 持有并管理全局 `EventBus` 实例
+### B. Protocol (`framework.h`)
+- `EVENT_MARKET_DATA`: 行情 (Symbol, Price, Vol)
+- `EVENT_ORDER_REQ`: 策略意图 (由策略发出，未风控)
+- `EVENT_ORDER_SEND`: 交易指令 (由风控发出，已批准)
+- `EVENT_RTN_TRADE`: 成交回报 (由 CTP 回调发出)
+- `EVENT_POS_UPDATE`: 持仓状态 (由持仓模块计算后发出)
 
-#### EventBus (事件总线)
-- **实现**: `EventBusImpl` 类（位于 `src/engine.cpp` 内部），基于 `std::array<std::vector<Handler>, MAX_EVENTS>` 的同步分发器
-- **接口**: 
-  - `subscribe(EventType type, Handler handler)`: 订阅事件
-  - `publish(EventType type, void* data)`: 发布事件（同步调用所有订阅者）
-  - `clear()`: 清空所有回调（用于安全退出）
+### C. 模块清单
 
-#### EventType (事件类型枚举)
-```cpp
-enum EventType {
-    EVENT_MARKET_DATA = 0,  // 行情数据
-    EVENT_ORDER_REQ,        // 报单请求
-    EVENT_LOG,              // 日志事件
-    MAX_EVENTS
-};
-```
+#### 1. Strategy Module (`modules/strategy`)
+- **功能**: 简单的网格/趋势策略。
+- **逻辑**: 监听 `MARKET_DATA` 和 `POS_UPDATE`，根据持仓状态决定开平方向，发布 `ORDER_REQ`。
 
-#### Event Payloads (事件负载结构)
-- **MarketData**: 包含 `symbol`, `last_price`, `volume`
-- **OrderReq**: 包含 `symbol`, `direction` ('B'/'S'), `price`, `volume`
+#### 2. Risk Module (`modules/risk`)
+- **功能**: 交易前风控。
+- **逻辑**: 拦截 `ORDER_REQ`，检查流控（每秒最大单量），通过则发布 `ORDER_SEND`，否则打印日志拒绝。
 
-### B. Plugin System (插件系统)
+#### 3. Position Module (`modules/position`)
+- **功能**: 持仓账本。
+- **逻辑**: 监听 `RTN_TRADE`，区分今/昨仓进行累加或扣减，发布 `POS_UPDATE`。
 
-#### IModule (插件接口)
-所有插件必须实现 `IModule` 接口：
-```cpp
-class IModule {
-    virtual void init(EventBus* bus, const ConfigMap& config) = 0;
-    virtual void start() {}  // 可选
-    virtual void stop() {}   // 可选
-};
-```
+#### 4. CTP Real Module (`modules/ctp_real`)
+- **功能**: 实盘交易执行。
+- **逻辑**: 监听 `ORDER_SEND`，调用 CTP API 发单；将 CTP 回调转换为 `RTN` 事件发布。
 
-#### 插件导出机制
-使用 `EXPORT_MODULE(ClassName)` 宏导出 `create_module()` 函数：
-```cpp
-#define EXPORT_MODULE(CLASS_NAME) \
-    extern "C" { \
-        IModule* create_module() { return new CLASS_NAME(); } \
-    }
-```
+#### 5. CTP Sim Module (`modules/ctp`)
+- **功能**: 模拟行情源。
+- **逻辑**: 随机游走生成价格，模拟交易所推送。
 
-#### 插件加载流程
-1. `HftEngine` 读取 `config.json`（使用 RapidJSON 解析）
-2. 遍历 `plugins` 数组，对每个启用的插件：
-   - 使用 `dlopen()` 加载 `.so` 库
-   - 使用 `dlsym()` 获取 `create_module` 函数指针
-   - 调用 `create_module()` 创建模块实例
-   - 调用 `init(bus, config)` 初始化模块
-   - 调用 `start()` 启动模块（如果实现）
-3. 运行主循环
-4. 退出时调用 `stop()`，清空 EventBus，释放插件
-
-### C. 实际模块实现
-
-#### CtpModule (`modules/ctp/ctp_module.cpp`)
-- **功能**: 模拟 CTP 行情推送和报单处理
-- **订阅**: `EVENT_ORDER_REQ`（接收报单请求）
-- **发布**: `EVENT_MARKET_DATA`（模拟行情推送）
-- **配置参数**: `symbol`
-- **实现细节**: 
-  - `start()` 时启动独立线程模拟行情推送
-  - 使用 `std::atomic<bool>` 控制线程生命周期
-
-#### StrategyModule (`modules/strategy/simple_strategy.cpp`)
-- **功能**: 网格策略，基于价格阈值触发买卖
-- **订阅**: `EVENT_MARKET_DATA`（接收行情）
-- **发布**: `EVENT_ORDER_REQ`（发送报单请求）
-- **配置参数**: `buy_thresh`, `sell_thresh`
-- **策略逻辑**:
-  - `last_price < buy_thresh`: 触发买单（'B'）
-  - `last_price > sell_thresh`: 触发卖单（'S'）
-
-## 4. 配置文件格式
-
-`config.json` 采用 JSON 格式，支持插件级别的启用/禁用：
-
-```json
-{
-    "plugins": [
-        {
-            "name": "CTP_Market",
-            "library": "./libmod_ctp.so",
-            "enabled": true,
-            "config": {
-                "symbol": "rb2410",
-                "front_addr": "tcp://180.168.146.187:10211",
-                "broker_id": "9999",
-                "account": "00001"
-            }
-        },
-        {
-            "name": "Grid_Strategy_A",
-            "library": "./libmod_strategy.so",
-            "enabled": true,
-            "config": {
-                "buy_thresh": "3480.0",
-                "sell_thresh": "3520.0",
-                "max_pos": "10"
-            }
-        }
-    ]
-}
-```
-
-## 5. 关键路径代码示例
-
-### 行情数据流
-```cpp
-// CtpModule::start() - 模拟行情推送
-void start() override {
-    worker_ = std::thread([this]() {
-        MarketData md;
-        md.last_price = price;
-        // 发布行情事件（零拷贝，传递指针）
-        bus_->publish(EVENT_MARKET_DATA, &md);
-    });
-}
-
-// StrategyModule::init() - 订阅行情
-void init(EventBus* bus, const ConfigMap& config) override {
-    bus_->subscribe(EVENT_MARKET_DATA, [this](void* d) {
-        this->onTick(static_cast<MarketData*>(d));
-    });
-}
-
-// StrategyModule::onTick() - 策略逻辑
-void onTick(MarketData* md) {
-    if (md->last_price < buy_thresh_) {
-        OrderReq req;
-        req.direction = 'B';
-        req.price = md->last_price;
-        // 发布报单请求
-        bus_->publish(EVENT_ORDER_REQ, &req);
-    }
-}
-```
-
-## 6. 构建系统
-
-使用 CMake 构建：
-- **主程序**: `hft_engine` (可执行文件)
-- **插件库**: 
-  - `libmod_ctp.so` (CTP 模块)
-  - `libmod_strategy.so` (策略模块)
-- **依赖**: 
-  - RapidJSON (JSON 解析)
-  - `dl` (动态库加载)
-  - `pthread` (线程支持)
-
-## 7. 目录结构
+## 4. 目录结构 (Updated)
 
 ```
 hft_eb/
 ├── include/
-│   ├── framework.h          # 框架接口定义
-│   └── engine.h             # 引擎核心类定义
+│   ├── framework.h          # 核心协议定义
+│   └── engine.h             # 引擎类
 ├── src/
-│   ├── main.cpp             # 程序入口
-│   └── engine.cpp           # 引擎实现（EventBus, PluginLoader）
+│   ├── main.cpp             # 入口
+│   └── engine.cpp           # 实现
 ├── modules/
-│   ├── ctp/
-│   │   └── ctp_module.cpp   # CTP 模块实现
-│   └── strategy/
-│       └── simple_strategy.cpp  # 策略模块实现
-├── config.json              # 插件配置文件
-├── CMakeLists.txt           # 构建配置
+│   ├── ctp/                 # 模拟行情
+│   ├── ctp_real/            # 实盘交易 (CTP)
+│   ├── risk/                # 风控模块
+│   ├── position/            # 持仓模块
+│   └── strategy/            # 策略逻辑
+├── conf/
+│   ├── config.json          # 默认配置
+│   └── config_full.json     # 全功能闭环配置
+├── docs/
+│   ├── roadmap.md           # 开发路线图
+│   ├── risk_design.md       # 风控设计
+│   └── position_design.md   # 持仓设计
+├── build/                   # CMake 中间产物
+├── bin/                     # 可执行文件与 .so
 └── GEMINI.md                # 本文档
 ```
+
+## 5. 构建与运行
+
+### 编译
+```bash
+bash build_release.sh
+```
+
+### 运行全功能闭环测试
+```bash
+cd bin
+./hft_engine ../conf/config_full.json
+```
+*(注意：需要修改 config_full.json 中的 CTP 账户信息)*
