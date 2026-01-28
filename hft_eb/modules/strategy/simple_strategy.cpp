@@ -13,7 +13,7 @@ public:
 
         // 订阅行情
         bus_->subscribe(EVENT_MARKET_DATA, [this](void* d) {
-            this->onTick(static_cast<MarketData*>(d));
+            this->onTick(static_cast<TickRecord*>(d));
         });
 
         // 订阅持仓更新
@@ -22,7 +22,7 @@ public:
         });
     }
 
-    void onTick(MarketData* md) {
+    void onTick(TickRecord* md) {
         // 防止数据还未初始化就发单
         if (md->last_price <= 0.1) return;
 

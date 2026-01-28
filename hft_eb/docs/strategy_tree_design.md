@@ -1,112 +1,79 @@
 # 策略树设计文档 (Strategy Tree Design)
 
+> **当前状态**：设计阶段 (Planned - 支持插件化叶子节点)
+
 ## 1. 核心目标
-构建一个层级化的策略管理系统，以支持：
-- **多策略并行 (Multi-Strategy)**: 同时运行网格、趋势、套利等多个策略。
-- **资金管理 (Capital Allocation)**: 父节点控制子节点的资金上限。
-- **组合风控 (Portfolio Risk)**: 在策略组层面进行净头寸控制。
-- **逻辑解耦**: 将“具体交易逻辑”与“系统事件处理”分离。
+构建一个层级化的策略管理系统，支持：
+- **二级插件化**: 每一个具体的交易策略（叶子节点）都是独立的 `.so` 文件，支持运行时动态加载。
+- **资源沙箱**: `StrategyTreeModule` 为每个叶子节点注入受限的上下文（Context），限制其发单权限。
+- **极速更新**: 无需重启主引擎，仅通过重载策略插件即可实现逻辑更新。
 
-## 2. 架构模式：组合模式 (Composite Pattern)
-
-所有的策略单元都实现同一个接口 `INode`。
+## 2. 架构模式：二级插件架构
 
 ```mermaid
-classDiagram
-    class INode {
-        +onTick(md)
-        +onOrderUpdate(rtn)
-        +addChild(node)
-    }
-    class StrategyModule {
-        -root: CompositeNode
-        +init(bus)
-        +start()
-    }
-    class CompositeNode {
-        -children: List<INode>
-        +onTick(md)
-    }
-    class LeafStrategy {
-        +onTick(md)
-        +logic()
-    }
+graph TD
+    Engine[HftEngine] -->|dlopen| TreeMod[libmod_strategy_tree.so]
     
-    StrategyModule --> CompositeNode
-    INode <|-- CompositeNode
-    INode <|-- LeafStrategy
-    CompositeNode o-- INode
+    subgraph "Strategy Tree Container"
+        TreeMod -->|dlopen| LeafA[libstrat_grid.so]
+        TreeMod -->|dlopen| LeafB[libstrat_ma.so]
+    end
+    
+    EventBus --> TreeMod
+    TreeMod -->|路由/分发| LeafA
+    TreeMod -->|路由/分发| LeafB
 ```
 
 ## 3. 接口定义 (C++)
 
+### 3.1 叶子节点接口 (`IStrategyNode`)
+这是提供给策略开发者的标准接口。
+
 ```cpp
-// 策略上下文，包含发单能力的句柄
 struct StrategyContext {
+    std::string strategy_id;
+    // 限制性发单函数：内部会自动填充 StrategyID 和 OrderRef 路由信息
     std::function<void(const OrderReq&)> send_order;
     std::function<void(const char* msg)> log;
 };
 
-class INode {
+class IStrategyNode {
 public:
-    virtual ~INode() = default;
-    
-    // 生命周期
+    virtual ~IStrategyNode() = default;
     virtual void init(StrategyContext* ctx, const ConfigMap& config) = 0;
-    
-    // 事件回调
-    virtual void onTick(const MarketData* md) = 0;
+    virtual void onTick(const TickRecord* tick) = 0;
     virtual void onOrderUpdate(const OrderRtn* rtn) = 0;
-    
-    // 树操作
-    virtual void addChild(std::shared_ptr<INode> child) {}
 };
+
+// 导出宏
+#define EXPORT_STRATEGY(CLASS_NAME) \
+    extern "C" IStrategyNode* create_strategy() { return new CLASS_NAME(); }
 ```
 
-## 4. 模块实现 (StrategyTreeModule)
+### 3.2 容器模块 (`StrategyTreeModule`)
+作为 `IModule` 插件，它负责：
+1. **动态加载**: 遍历 JSON 配置中的 `library` 路径，使用 `dlopen/dlsym` 实例化各叶子节点。
+2. **上下文注入**: 为每个节点创建独立的 `StrategyContext`。
+3. **事件路由**: 维护 `OrderRef` -> `StrategyID` 的映射表，确保成交回报能准确送达对应的叶子节点。
 
-`StrategyTreeModule` 是一个标准的 HFT 插件 (`IModule`)，它充当**适配器**：
-
-1.  **订阅 EventBus**: 监听 `EVENT_MARKET_DATA`, `EVENT_RTN_ORDER` 等。
-2.  **持有 Root Node**: 维护一棵策略树。
-3.  **事件分发**:
-    - 收到行情 -> 调用 `root->onTick(md)` -> 递归传给所有子策略。
-    - 收到成交 -> 根据 `OrderRef` 或 `StrategyID` 找到对应子策略 -> `node->onOrderUpdate()`.
-4.  **发单代理**:
-    - 为每个节点注入 `send_order` 回调。
-    - 当节点调用 `send_order` 时，Module 将其封装为 `EVENT_ORDER_REQ` 并发布到 EventBus。
-    - **关键**: 在 `OrderReq` 中注入 `StrategyID`，以便回调路由。
-
-## 5. 示例配置结构
+## 4. 示例配置
 
 ```json
 {
     "name": "StrategyTree",
     "library": "./libmod_strategy_tree.so",
     "config": {
-        "root": {
-            "type": "Portfolio",
-            "max_risk": 100000,
-            "children": [
-                {
-                    "type": "GridStrategy",
-                    "id": "GRID_01",
-                    "symbol": "rb2410",
-                    "params": { "step": 10 }
-                },
-                {
-                    "type": "TrendStrategy",
-                    "id": "MA_01",
-                    "symbol": "rb2410",
-                    "params": { "window": 60 }
-                }
-            ]
-        }
+        "nodes": [
+            {
+                "id": "GRID_01",
+                "library": "./libstrat_grid.so",
+                "symbol": "rb2410",
+                "params": { "step": 10 }
+            }
+        ]
     }
 }
 ```
 
-## 6. 优势
-- **统一入口**: 引擎只与 `StrategyTreeModule` 交互，不需要知道具体跑了多少个策略。
-- **状态隔离**: 每个 LeafStrategy 维护自己的 `position` 和 `orders` 状态，互不干扰。
-- **热插拔可能性**: 理论上可以在运行时动态 `addChild` 或 `removeChild`（需加锁）。
+## 5. 监控支持 (State Exposure)
+`StrategyTreeModule` 将汇总所有动态加载的叶子节点状态（如 PnL、发单成功率），并统一写入全局 `SystemState` 快照，供监控模块拉取。

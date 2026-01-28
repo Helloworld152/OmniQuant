@@ -28,7 +28,8 @@ public:
                 // 模拟价格波动
                 price += (rand() % 100 - 45); // -45 ~ +55
                 
-                MarketData md;
+                TickRecord md;
+                memset(&md, 0, sizeof(TickRecord));
                 strncpy(md.symbol, symbol_.c_str(), 31);
                 md.last_price = price;
                 md.volume = 1;

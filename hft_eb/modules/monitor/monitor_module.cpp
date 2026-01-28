@@ -1,5 +1,5 @@
 #include "../../include/framework.h"
-#include "../../include/ring_buffer.h"
+#include "ring_buffer.h"
 #include <thread>
 #include <atomic>
 #include <chrono>
@@ -15,7 +15,7 @@
 struct MonitorEvent {
     EventType type;
     union Payload {
-        MarketData md;
+        TickRecord md;
         OrderRtn rtn;
         PositionDetail pos;
     } data;
@@ -38,7 +38,7 @@ public:
         bus_->subscribe(EVENT_MARKET_DATA, [this](void* d) {
             MonitorEvent evt;
             evt.type = EVENT_MARKET_DATA;
-            std::memcpy(&evt.data.md, d, sizeof(MarketData));
+            std::memcpy(&evt.data.md, d, sizeof(TickRecord));
             queue_.push(evt);
         });
 

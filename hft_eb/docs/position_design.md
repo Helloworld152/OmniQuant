@@ -80,24 +80,36 @@ sequenceDiagram
 
 ## 4. 实现逻辑 (PositionModule.cpp)
 
+
+
 ### 状态管理
-使用 `std::unordered_map<std::string, PositionDetail> positions_;` 存储所有合约持仓。
 
-### 处理规则 (上期所模式)
-- **买开 (Open Buy)**: `long_td += volume`, 重新计算 `long_avg_price`。
-- **卖开 (Open Sell)**: `short_td += volume`, 重新计算 `short_avg_price`。
-- **卖平 (Close Sell)**: 
-  - 优先扣减 `long_yd` (昨仓)。
-  - 如果 `OffsetFlag == 'T'` (平今指令)，强制扣减 `long_td`。
-  - 剩余部分扣减次优先仓位。
-- **买平 (Close Buy)**: 同理扣减空头持仓。
+使用 `std::unordered_map<std::string, PositionDetail> positions_;` 存储所有合约持仓。使用 `std::mutex` 确保线程安全。
 
-### 持久化与初始化
-为了防止重启后持仓丢失，PositionModule 在 `init` 阶段应该：
-1. **(MVP)** 通过 CTP `ReqQryInvestorPosition` 查询初始持仓（最稳妥，以柜台为准）。
-2. **(进阶)** 读取本地 `position.db` 快照（用于快速恢复，但需校验）。
 
-## 5. 下一步计划
-1. 修改 `framework.h`，添加上述结构体。
-2. 更新 `CtpRealModule`，使其能够发布 `RTN` 事件。
-3. 实现 `PositionModule`。
+
+### 处理规则 (当前简化版)
+
+- **买开 (Buy Open)**: `long_td += volume`。
+
+- **卖开 (Sell Open)**: `short_td += volume`。
+
+- **卖平 (Sell Close)**: 
+
+  - 如果 `OffsetFlag == 'T'` (平今)，扣减 `long_td`。
+
+  - 否则，优先扣减 `long_yd`，不足部分扣减 `long_td`。
+
+- **买平 (Buy Close)**: 
+
+  - 如果 `OffsetFlag == 'T'` (平今)，扣减 `short_td`。
+
+  - 否则，优先扣减 `short_yd`，不足部分扣减 `short_td`。
+
+
+
+### 限制
+
+- 当前版本尚未实现平均成交价计算及盈亏 (PnL) 统计。
+
+- 尚未处理 `EVENT_RTN_ORDER` 事件。

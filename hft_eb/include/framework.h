@@ -6,6 +6,7 @@
 #include <functional>
 #include <iostream>
 #include <array>
+#include "../core/include/protocol.h" // 引入 TickRecord 定义
 
 // ==========================================
 // 1. 基础数据结构
@@ -15,7 +16,7 @@
 enum EventType {
     EVENT_MARKET_DATA = 0, // 行情
     EVENT_ORDER_REQ,       // 报单请求 (策略意图)
-    EVENT_ORDER_SEND,      // 报单指令 (经风控批准)
+    EVENT_ORDER_SEND,      // 报单指令 (经风控扶准)
     EVENT_RTN_ORDER,       // 报单回报 (交易所状态)
     EVENT_RTN_TRADE,       // 成交回报 (交易所成交)
     EVENT_POS_UPDATE,      // 持仓更新
@@ -23,12 +24,10 @@ enum EventType {
     MAX_EVENTS
 };
 
-// 事件负载 (Payload)
-struct MarketData {
-    char symbol[32];
-    double last_price;
-    int volume;
-};
+// 事件载荷 (Payload)
+// 全系统直接使用 core/protocol.h 中的 TickRecord 作为标准行情结构
+// 彻底废弃 MarketData
+// 彻底底弃 MarketData
 
 struct OrderReq {
     char symbol[32];
@@ -47,7 +46,7 @@ struct OrderRtn {
     double limit_price;
     int volume_total;    // 报单总量
     int volume_traded;   // 已成交量
-    char status;         // '0':全部成交, '1':部分成交, '3':未成交, '5':已撤单
+    char status;         // '0':全部成交, '1':部分成交, '3':未成交, '5':已退单
     char status_msg[81];
 };
 
@@ -71,7 +70,7 @@ struct PositionDetail {
     int long_yd;
     double long_avg_price;
     
-    // 空头
+    // 假头
     int short_td;
     int short_yd;
     double short_avg_price;
@@ -113,11 +112,35 @@ public:
 };
 
 // ==========================================
-// 4. 导出符号约定
+// 4. 二级策略插件接口 (Strategy Tree Leaf)
+// ==========================================
+struct StrategyContext {
+    std::string strategy_id;
+    std::function<void(const OrderReq&)> send_order;
+    std::function<void(const char* msg)> log;
+};
+
+class IStrategyNode {
+public:
+    virtual ~IStrategyNode() = default;
+    virtual void init(StrategyContext* ctx, const ConfigMap& config) = 0;
+    virtual void onTick(const TickRecord* tick) = 0;
+    virtual void onOrderUpdate(const OrderRtn* rtn) = 0;
+};
+
+// ==========================================
+// 5. 匾出符号约定
 // ==========================================
 // 每个 .so 必须实现这个函数来创建模块实例
 typedef IModule* (*CreateModuleFunc)();
 #define EXPORT_MODULE(CLASS_NAME) \
     extern "C" { \
         IModule* create_module() { return new CLASS_NAME(); } \
+    }
+
+// 每个策略 .so 必须实现
+typedef IStrategyNode* (*CreateStrategyFunc)();
+#define EXPORT_STRATEGY(CLASS_NAME) \
+    extern "C" { \
+        IStrategyNode* create_strategy() { return new CLASS_NAME(); } \
     }

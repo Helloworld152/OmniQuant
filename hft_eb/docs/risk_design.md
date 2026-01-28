@@ -31,16 +31,18 @@ graph LR
 ### 2. 创建风控模块 (`modules/risk/risk_module.cpp`)
 #### 职责：
 1.  **订阅** `EVENT_ORDER_REQ`。
-2.  **订阅** `EVENT_MARKET_DATA` (用于价格合理性检查)。
+2.  **订阅** `EVENT_MARKET_DATA` (预留位置)。
 3.  **执行检查**：
-    - **流控 (Flow Control)**：限制每秒最大报单数（如 Token Bucket 算法）。
-    - **价控 (Price Limit)**：拒绝偏离最新价超过 $X\%$ 的“胖手指”报单。
-    - **自成交检查 (Self-Match)**：(可选) 维护未成交订单列表，防止自己吃自己的单子。
+    - **流控 (Flow Control)**：限制每秒最大报单数。当前实现采用**滑动窗口 (Sliding Window)** 算法，通过 `std::vector` 存储最近一秒内的时间戳，超过限制则拦截。
+    - **线程安全**：使用 `std::mutex` 保护时间戳向量的并发读写。
 4.  **发布**：
-    - 如果通过：发布 `EVENT_ORDER_SEND` (携带原始数据)。
-    - 如果拦截：发布 `EVENT_LOG` (携带警告信息)。
+    - 如果通过：记录当前时间戳，并发布 `EVENT_ORDER_SEND`。
+    - 如果拦截：打印错误日志并拒绝转发。
 
-### 3. 更新执行模块 (`modules/ctp_real/ctp_real_module.cpp`)
+### 5. 监控支持 (State Exposure)
+风控模块需要维护一组原子计数器（如 `rejected_count`, `last_flow_rate`），并将这些指标更新到全局 `SystemState` 快照中，以便监控模块定时拉取。
+
+### 4. 更新执行模块 (`modules/ctp_real/ctp_real_module.cpp`)
 - 将订阅从 `EVENT_ORDER_REQ` 改为 `EVENT_ORDER_SEND`。
 - 这确保了实盘模块**只**执行经过批准的订单。
 

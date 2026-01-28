@@ -8,6 +8,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 
+# Global Includes
+include_directories(include)
+include_directories(core/include)
+
 # 1. 编译插件 A: CTP (模拟)
 add_library(mod_ctp SHARED modules/ctp/ctp_module.cpp)
 target_include_directories(mod_ctp PRIVATE include)
@@ -42,6 +46,10 @@ add_library(mod_monitor SHARED modules/monitor/monitor_module.cpp)
 target_include_directories(mod_monitor PRIVATE include)
 # Link against system libzmq (assuming installed via apt/yum)
 target_link_libraries(mod_monitor PRIVATE -Wl,--no-as-needed pthread zmq -Wl,--as-needed)
+
+# 8. 编译插件 G: Replay (DataFeed)
+add_library(mod_replay SHARED modules/replay/replay_module.cpp)
+target_include_directories(mod_replay PRIVATE include core/include)
 
 # 7. 编译主程序
 add_executable(hft_engine src/main.cpp src/engine.cpp)
